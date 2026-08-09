@@ -1,96 +1,81 @@
 # AI for Smarter Patient Care
 
-**Track 1 — Structured Patient Timeline & Evidence Retrieval**
-Research and educational prototype only. Not for clinical use. Do not use for diagnosis, treatment, triage, or emergency decisions.
+*A research and educational prototype. Not for clinical use. Please don't use this for diagnosis, treatment, triage, or emergency decisions — it isn't built or tested for that.*
 
 ## Overview
 
-AI for Smarter Patient Care turns a patient's fragmented, multi-table hospital record into one unified, time-ordered clinical timeline, and lets a user ask plain-language questions about that record. Every answer is generated from evidence retrieved directly from the source data — never from the language model's own knowledge — and the system explicitly says "cannot answer" when the record does not support a question.
+Hospital data is scattered across disconnected tables never designed to be read together. We assemble them into a single, chronological patient timeline and let you ask questions in plain English. The AI never guesses or hallucinates , it deterministically retrieves the real data first, then translates that evidence into a clear answer, or openly admits when it doesn't know.
+
+
 
 ## The Problem
 
-A single hospital stay in MIMIC-IV is spread across separate tables: admissions, transfers, laboratory results, medication administrations, diagnoses, and ICU observations. Reconstructing "what happened to this patient, and when" means manually joining six relational tables, reconciling timestamps, and cross-checking units and data-quality issues by hand. This is slow, error-prone, and easy to get wrong — for example, mixing events from two separate hospital admissions into what looks like one continuous story. For researchers and clinical-data teams, that friction makes it hard to trust, verify, or reuse structured hospital data.
+If you've ever tried to actually read through a patient's hospital stay in MIMIC-IV, you know the pain: admissions in one table, transfers in another, labs in a third, medications somewhere else, diagnoses coded separately, ICU readings in yet another. To answer something as simple as "what was this patient's highest creatinine reading," you'd normally have to join several tables by hand, get the timestamps right, and hope you didn't accidentally pull in data from a completely different hospital visit. That last part matters more than it sounds  most patients in this dataset have been admitted more than once, so if you're not careful about which visit you're looking at, you can end up blending two unrelated hospitalizations into what looks like one continuous story.
 
 ## Our Solution
 
-The application ingests six MIMIC-IV Clinical Database Demo v2.2 tables (`admissions`, `transfers`, `icustays`, `labevents`, `emar`, `diagnoses_icd`) and normalizes them into one unified event table (`events_df`) with a common schema: `subject_id`, `hadm_id`, `stay_id`, `event_time`, `event_type`, `description`, `source_table`, `source_id`. A user selects a patient, sees a dashboard-style clinical record (status, demographics, diagnoses, medications, labs, ICU vitals), and can ask a free-text question. The question is parsed into a structured lookup, answered from retrieved evidence rows (never from the model's own knowledge), and every returned fact is traceable back to its exact source table and row.
+We wrote a pipeline that takes six MIMIC-IV tables (admissions, transfers, ICU stays, labs, medications, diagnoses) and normalizes them into one shared format  same columns, same time axis so they can all live in a single unified event table. From there, the app gives you two things: a dashboard view of a patient's record (who they are, what happened, what their labs and vitals look like), and a question box where you can ask something like "what medications was this patient on" and get back an answer that's grounded in the actual retrieved records, not a guess.
 
-## Key Features
+## What's Actually Built
 
-Only features verified in the current code (`app.py`, the processing notebook) are listed here.
+We're only listing things we could verify by reading the code — not things that were planned, discussed, or half-started.
 
-- **Unified patient timeline** — six MIMIC-IV tables merged into one chronological event feed per patient, with `source_table`/`source_id` on every row for traceability.
-- **Patient Record dashboard** — status badge (Admitted / In ICU / Discharged), admission-type badge, demographic facts strip, KPI cards (total records, lab tests, flagged labs, ICU stay), diagnoses table, medications table, latest-lab-per-test table, latest-ICU-vitals table.
-- **AI-powered clinical question answering** — free-text question → LLM-driven structured-query parser (Groq `llama-3.3-70b-versatile`, forced tool call) → deterministic evidence retrieval → LLM synthesis of the final sentence, constrained to only the retrieved evidence.
-- **Evidence-grounded responses** — the parsed query and the exact evidence rows used to answer are shown in an expander next to every answer.
-- **Deterministic retrieval for lab values and events** — "latest / highest / lowest" lab questions and medication/diagnosis/ICU/admission/transfer lookups are answered by pandas aggregation functions (`retrieve_lab_metric`, `retrieve_event`), not by LLM generation.
-- **Abstention on insufficient evidence** — the system returns "Cannot answer" (rather than guessing) when: the requested metric/event type isn't recognized, no numeric records exist for a metric, all matching lab records are flagged implausible, no matching events exist, or the question doesn't map to a supported query type.
-- **Laboratory data-quality flagging** — every lab result is checked for four issues (missing unit, lab-marked-abnormal, duplicate result, implausible value against a hard-coded physiological range) and flagged records are shown in a dedicated, unmodified table — nothing is silently corrected or deleted.
-- **Full traceable timeline view** — every event for the selected patient, sorted chronologically, with source table and source row ID visible for verification.
-- **Prominent safety banner** — the research-only / not-for-clinical-use disclaimer is shown at the top of every page load.
+- **A unified timeline.** Six source tables get merged into one event feed per patient, and every single row keeps a pointer back to exactly which table and row it came from.
+- **A patient dashboard.** Status badge, basic demographics, diagnoses, medications, latest labs, and ICU vitals, all on one screen.
+- **Question answering that doesn't hallucinate by design.** A question first gets parsed into a structured lookup (which metric, which aggregation) using an enumerated list built straight from the real data — the model literally cannot pick a lab name that doesn't exist in the dataset. Then the actual answer — the max, the min, the latest value, the list of medications — comes from plain pandas code, not the language model. Only after that does the LLM get involved again, to turn the retrieved facts into a sentence, and it's explicitly told not to state anything that isn't in that evidence.
+- **Real abstention.** If the data doesn't support a question, the app says so, with a specific reason, instead of making something up. We checked this fires correctly for unrecognized metrics, missing records, all-flagged-implausible records, and genuinely out-of-scope questions like "what's the weather."
+- **Every answer comes with receipts.** Click to expand and you'll see the parsed query and the exact evidence rows the answer was built from.
+- **Lab data quality flags.** Every lab result gets checked for a missing unit, being marked abnormal by the source system, being a duplicate, or being a physiologically implausible value. Flagged doesn't mean wrong — it means "a human should look at this before trusting it." Nothing gets silently corrected or deleted.
+- **The disclaimer is actually on the screen.** Every page load shows the research-only warning, not buried in a README somewhere.
 
 ## How It Works
 
 ```mermaid
 flowchart TD
-    A[MIMIC-IV Demo v2.2 tables<br/>admissions, transfers, icustays,<br/>labevents, emar, diagnoses_icd] --> B[Normalization<br/>timestamp parsing, schema alignment]
-    B --> C[Unified Clinical Timeline<br/>events_df: one row per event,<br/>sorted by subject_id + event_time]
-    C --> D[Patient Record Dashboard<br/>status, demographics, KPIs,<br/>diagnoses, meds, labs, vitals]
-    C --> E[Clinical Question Parser<br/>Groq LLM, forced tool call →<br/>structured_query]
-    E --> F[Deterministic Retrieval<br/>retrieve_lab_metric / retrieve_event<br/>pandas filter + aggregate]
-    F --> G{Evidence found?}
-    G -- No --> H[Abstain:<br/>"Cannot answer — reason"]
-    G -- Yes --> I[LLM Synthesis<br/>answers ONLY from evidence JSON,<br/>cites source_table + timestamp]
-    I --> J[Grounded Answer + Evidence Table]
+    A[MIMIC-IV Demo v2.2 tables<br/>admissions, transfers, icustays,<br/>labevents, emar, diagnoses_icd] --> B[Normalize<br/>fix timestamps, align schema]
+    B --> C[Unified Timeline<br/>one row per event, sorted by patient + time]
+    C --> D[Patient Dashboard<br/>status, demographics, labs, meds, vitals]
+    C --> E[Question Parser<br/>LLM maps a question to a structured lookup]
+    E --> F[Deterministic Retrieval<br/>pandas filter + aggregate — no LLM involved]
+    F --> G{Found something?}
+    G -- No --> H["Cannot answer — here's why"]
+    G -- Yes --> I[LLM explains the evidence<br/>only allowed to state what's in it]
+    I --> J[Answer + the evidence behind it]
     H --> J
-    J --> K[User]
+    J --> K[You]
     D --> K
 ```
 
-## AI / Clinical QA Architecture
+## The AI/QA Flow, in Plain Terms
 
-```
-Question
-  → Interpretation        (LLM forced tool-call → structured_query: query_type, metric, agg, event_type)
-  → Timeline filtering     (subset events_df / lab_qa_flagged by subject_id, metric, or event_type)
-  → Deterministic aggregation (max / min / latest lab value, or full event list — pandas, not LLM)
-  → Evidence check         (empty or all-implausible → abstain with a stated reason)
-  → LLM synthesis          (system prompt restricts the model to facts in the evidence JSON only)
-  → Evidence-backed response (answer text + visible parsed query + evidence table)
-```
+You ask a question. First, the model figures out what kind of question it is — a lab value question, or an event lookup — and picks the closest match from a list of things that actually exist in the data. Then we go get the real answer using ordinary code: filter the data down to this patient, filter to the right metric or event type, and compute the max/min/latest or pull the matching records. If nothing turns up, we stop right there and tell you why, without ever calling the model again. If something does turn up, we hand the model just that evidence and ask it to explain it in a sentence — and the instructions are explicit that it can't add anything that isn't already there.
 
-The LLM has two narrow jobs: (1) map a free-text question to one of a fixed, enumerated set of metrics/event types (it cannot invent a metric name — the tool schema's `enum` is built from the real data), and (2) phrase the retrieved evidence into a sentence, under a system prompt that forbids stating any number, date, or fact not present in the evidence JSON. The underlying patient evidence — not the LLM — is the source of truth; the LLM is a synthesis and interpretation layer on top of it.
+The point of building it this way is that the patient data is the source of truth, not the model. The model's job is translation and interpretation, not invention.
 
 ## Dataset
 
-MIMIC-IV Clinical Database Demo v2.2 (organizer-supplied, de-identified).
+We're using the MIMIC-IV Clinical Database Demo v2.2, which is de-identified and publicly available through PhysioNet.
 
-| Metric | Value |
+| | |
 |---|---|
 | Patients | 100 |
-| Total clinical events (unified timeline) | 149,673 |
+| Total events in the unified timeline | 149,673 |
 | Laboratory events | 107,727 |
 | Medication events | 35,835 |
 | Diagnosis events | 4,506 |
 | Transfer events | 1,190 |
 | Admission events | 275 |
-| ICU Stay events | 140 |
+| ICU stay events | 140 |
 
-These figures are as supplied for this project; no additional statistics are claimed beyond what is stated above. Note: 100 patients across 275 admissions means most patients have multiple hospital visits (see **Safety & Limitations** for the admission-scoping caveat).
+Worth noting: 100 patients across 275 admissions means most people in this dataset were admitted more than once. That's relevant to a limitation described below.
 
 ## Technology Stack
 
-- **Python 3** / **pandas** — data loading, normalization, and the unified timeline
-- **Streamlit** — web application UI (`app.py`)
-- **Groq API** (`llama-3.3-70b-versatile`, via the `groq` Python SDK) — structured-query parsing (forced tool call) and grounded-answer synthesis
-- **python-dotenv** — local environment variable loading
-- **Jupyter Notebook** — data processing / pipeline development (`AI_for_Smarter_Patient_Care_CORRECTED.ipynb`)
+Python and pandas for the data work, Streamlit for the app itself, and Groq's API (`llama-3.3-70b-versatile`) for the two narrow LLM jobs described above. `python-dotenv` handles local environment variables. No vector database, no embeddings, no RAG framework — retrieval here is straightforward filtering and aggregation over the unified table, which is simpler and, for this kind of structured lookup, more reliable than similarity search would be.
 
-No vector database, embeddings, or RAG framework is used — retrieval is deterministic pandas filtering/aggregation over the unified event table, not similarity search.
+## Things You Can Actually Ask It
 
-## Example Questions
-
-Verified against the implemented query types (`lab_metric` and `event_lookup`):
+These work because they map onto the two query types the app supports:
 
 - "What was the patient's highest recorded creatinine value?"
 - "What was the latest hemoglobin result?"
@@ -98,20 +83,22 @@ Verified against the implemented query types (`lab_metric` and `event_lookup`):
 - "What diagnoses were recorded for this patient?"
 - "Did this patient have an ICU stay?"
 
-Questions outside these two categories (e.g., open-ended "what happened during this hospitalization," free-text symptom questions, or anything requiring clinical judgment) are classified `unsupported` and the system abstains rather than guessing.
+Open-ended questions, or anything that requires clinical judgment rather than a lookup, will come back as "cannot answer" — that's intentional, not a bug.
 
-## Safety & Limitations
+## Safety and Limitations 
 
-- **Research and educational prototype only. Not for clinical use.** Do not use for diagnosis, treatment, triage, or emergency decisions. This banner is shown on every page load in the app.
-- **Not validated for clinical accuracy, generalizability, or patient outcomes.** 100 patients is a small, non-representative sample; nothing here should be read as a clinical or operational claim.
-- **The LLM never states a fact that isn't in the retrieved evidence** (by system-prompt constraint), and the system abstains outright when no evidence is found — but a system prompt is not a formal guarantee. Manual testing (see `docs/EVALUATION.md`) found no hallucinated values, but no adversarial or quantitative hallucination audit has been run.
-- **Known gap — admission (`hadm_id`) scoping is not enforced in the deployed app.** The processing notebook explicitly documents that ~100 patients span 275 admissions and that timelines "must be scoped by `hadm_id` to prevent mixing data from separate hospitalizations." The unified `events_df` carries `hadm_id` on every row, but the current `app.py` selects only by `subject_id` — the Patient Record and full-timeline views merge all of a patient's admissions together. For patients with more than one hospitalization, this can present events from unrelated visits as one continuous story. This is the single highest-priority fix before relying on the timeline view for multi-admission patients (see `docs/EVALUATION.md` and `docs/SUBMISSION_CHECKLIST.md`).
-- **EMAR (medication) coverage is partial.** Not every patient has medication records; the app correctly shows "No medication records found" rather than fabricating one, but a user unfamiliar with the dataset could mistake this for a data-loading bug.
-- **Procedures are not currently part of the unified timeline** — the event table covers admissions, transfers, ICU stays, labs, medications, and diagnoses, but not `procedures_icd`.
-- **De-identification**: performed upstream by PhysioNet as part of the MIMIC-IV Demo release (date-shifted timestamps, removed identifiers); this application does not perform its own de-identification and must not be pointed at non-de-identified data.
-- **Human oversight is required.** Every AI-generated answer displays its underlying evidence so a human can verify it before relying on it; the app does not take, recommend, or automate any clinical action.
+This is a research prototype, not a clinical tool, and it says so on every screen. It hasn't been validated for accuracy or safety at any clinical standard, and 100 patients from one hospital is nowhere near enough data to generalize anything from.
 
-## Installation
+The LLM is instructed not to state facts outside the retrieved evidence, and in the testing we did, it didn't — but a system prompt is an instruction, not a guarantee, and we haven't run a large-scale or adversarial test to see if it can be broken. Treat every AI answer as something to check against the evidence shown next to it, not as something to trust on its own.
+
+The one gap we want to be upfront about: **the app doesn't currently separate a patient's different hospital admissions.** Since most patients here were admitted more than once, viewing "the patient's timeline" without picking a specific visit means you might be looking at two unrelated hospitalizations stitched together as if they were one. We know this, we're not hiding it, and it's the top thing we'd fix next if we had more time. We chose not to rush a change into the app this late — a poorly-tested feature change felt riskier than a documented limitation.
+
+A couple of smaller things: not every patient has medication records (the app correctly says "none found" rather than guessing why), and procedure records aren't part of the timeline yet — only admissions, transfers, ICU stays, labs, medications, and diagnoses are.
+
+De-identification of the underlying data was done by PhysioNet before we ever touched it; we didn't build any de-identification ourselves, and this tool should never be pointed at real, identified patient data.
+
+
+## Getting It Running
 
 ```bash
 git clone <your-repo-url>
@@ -121,22 +108,11 @@ source .venv/bin/activate        # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-You also need the processed CSVs in the project root (produced by running the notebook's data pipeline against the MIMIC-IV Demo v2.2 `hosp/` and `icu/` folders):
-
-- `events_df.csv`
-- `lab_qa_flagged.csv`
-- `patient_info.csv`
-- `vitals_df.csv`
-
-Run `AI_for_Smarter_Patient_Care_CORRECTED.ipynb` end-to-end once (with the MIMIC-IV Demo v2.2 data available under `data/mimic-iv-clinical-database-demo-2.2/`) to generate these four files, then place them alongside `app.py`.
+You'll also need four CSVs sitting next to `app.py`: `events_df.csv`, `lab_qa_flagged.csv`, `patient_info.csv`, and `vitals_df.csv`. These come from running the notebook (`AI_for_Smarter_Patient_Care_CORRECTED.ipynb`) once, top to bottom, against the MIMIC-IV Demo v2.2 data.
 
 ## Environment Variables
 
-| Variable | Required | Purpose |
-|---|---|---|
-| `GROQ_API_KEY` | Yes, for the Q&A tab | Groq API key used for question parsing and grounded-answer synthesis. Without it the app still runs — the Patient Record dashboard works fully — but the "Ask Questions" tab shows a clear warning instead of crashing. |
-
-Set locally via a `.env` file (see `.env.example`) or, on Streamlit Community Cloud, under **Settings → Secrets**. Never commit a real key to the repository.
+You need a `GROQ_API_KEY`. Copy to `.env` locally, or set it under Streamlit Cloud's Secrets if you're deploying there. Without it, the dashboard still works fine — only the question box is disabled, with a clear message explaining why, instead of anything breaking.
 
 ## Running Locally
 
@@ -144,11 +120,9 @@ Set locally via a `.env` file (see `.env.example`) or, on Streamlit Community Cl
 streamlit run app.py
 ```
 
-Then open the URL Streamlit prints (typically `http://localhost:8501`).
-
 ## Deployment
 
-Not verified in the materials supplied for this audit — no deployment platform, build configuration, or live URL was included in the reviewed files. If the app is deployed on Streamlit Community Cloud, document the exact app URL and secret configuration here before submission; otherwise state that the demo will be run locally.
+Live at **https://aiforsmarterpatientcare.streamlit.app/**, hosted on Streamlit Community Cloud.
 
 ## Project Structure
 
@@ -157,70 +131,69 @@ README.md
 app.py
 requirements.txt
 .env.example
-AI_for_Smarter_Patient_Care_CORRECTED.ipynb   # data pipeline: load → normalize → unify → QA-flag → retrieval → LLM layer
+AI_for_Smarter_Patient_Care_CORRECTED.ipynb
 docs/
   ARCHITECTURE.md
   EVALUATION.md
   RESPONSIBLE_AI.md
-  SUBMISSION_CHECKLIST.md
   images/
     dashboard.png
     patient-timeline.png
     ai-answer.png
     evidence.png
-data/                                          # MIMIC-IV Demo v2.2 (not included; obtain via PhysioNet)
-  mimic-iv-clinical-database-demo-2.2/
-    hosp/
-    icu/
-events_df.csv           # generated by the notebook
-lab_qa_flagged.csv       # generated by the notebook
-patient_info.csv         # generated by the notebook
-vitals_df.csv            # generated by the notebook
+data/  
+    MIMIC-IV Demo v2.2  dataset
+events_df.csv                # generated by the notebook
+lab_qa_flagged.csv           # generated by the notebook
+patient_info.csv             # generated by the notebook
+vitals_df.csv                # generated by the notebook
 ```
-
-`tests/` is not included here because no automated test suite exists in the reviewed materials (see `docs/EVALUATION.md` for how the system was actually checked).
 
 ## Evaluation
 
-See `docs/EVALUATION.md` for the full write-up. In short: this is **manual, scenario-based testing**, not a quantitative benchmark. The notebook (`Cell 64`) runs three representative questions end-to-end (a supported lab question, a supported medication question, and an out-of-scope question) and confirms the abstention path fires correctly on the unsupported one. No accuracy, precision/recall, or hallucination-rate numbers are reported because no ground-truth answer set or automated evaluation harness currently exists — inventing such numbers would misrepresent the project.
+Full write-up in `docs/EVALUATION.md`. Short version: this was manual testing, not a formal benchmark. We ran a handful of representative questions against a demo patient and checked the abstention logic by hand — we did not build a labeled test set or measure accuracy numerically, so we're not going to pretend we did.
 
-## Future Improvements
+## What We'd Do Next
 
-Clearly separated from what is implemented today:
+- Actually scope the timeline and Q&A by admission (`hadm_id`), not just by patient — this is the real fix for the limitation above.
+- Add procedure records as a seventh event type.
+- Build a proper labeled question set so evaluation can be a number, not just a vibe check.
+- Add automated tests around the retrieval and abstention functions.
 
-- Enforce `hadm_id` (single-admission) scoping in the UI and in the Q&A retrieval functions, so a user explicitly picks one hospitalization before viewing a timeline or asking a question — closing the gap described in **Safety & Limitations**.
-- Add `procedures_icd` as a seventh event type in the unified timeline.
-- Build a small labeled evaluation set (question → expected metric/event_type → expected evidence rows) to move from manual spot-checks to a repeatable, quantitative evaluation harness.
-- Add automated tests around `retrieve_lab_metric` / `retrieve_event` abstention logic.
-- Add a visible "last updated" / data-vintage indicator and an explicit cohort/admission picker for Track 2-style exploration.
+## Screenshots
 
-## Screenshots / Demo
-
-See `docs/SUBMISSION_CHECKLIST.md` and the **Screenshot Plan** provided separately for exactly which screens to capture. Save screenshots to `docs/images/` using the filenames below before publishing this README with images embedded.
+All captured from the live deployment.
 
 ### 1. Clinical Dashboard
-`docs/images/dashboard.png`
+![Clinical Dashboard](docs/images/dashboard.png)
 
-The Patient Record tab: status badge, demographic strip, and the four KPI cards. This is the five-second "what is this product" shot — a judge should immediately see a real clinical record, not a chatbot window.
+Patient status, demographics, and the KPI cards
 
-### 2. Patient Timeline
-`docs/images/patient-timeline.png`
+### 2. Diagnoses, Medications, and Record Breakdown
+![Record Types, Diagnoses, Medications](docs/images/dashboard-detail.png)
 
-The full timeline table in the Ask Questions tab, showing events from six source tables merged into one chronological, traceable list — the core "fragmentation solved" moment.
+The record-type breakdown alongside the diagnosis and medication tables, each pulled from a distinct source table.
 
-### 3. AI Clinical Question Answering
-`docs/images/ai-answer.png`
+### 3. Labs and ICU Vitals
+![Latest Labs and ICU Vitals](docs/images/labs-vitals.png)
 
-A supported question (e.g. "What was the highest creatinine value?") with its grounded answer displayed.
+Latest recorded value per lab test, with data-quality status, plus the most recent ICU vital signs.
 
-### 4. Evidence / Supporting Records
-`docs/images/evidence.png`
+### 4. Patient Timeline
+![Patient Timeline](docs/images/patient-timeline.png)
 
-The expanded "Show parsed query + evidence" panel for the same question, showing the exact source row(s) the answer is grounded in.
+The full merged timeline together with the flagged-lab-records view — six source tables in one chronological, traceable list.
 
-### 5. Additional Analytics
-Not included — no additional analytics view beyond the dashboard and timeline currently exists in the implementation.
+### 5. AI Clinical Question Answering
+![AI Answer](docs/images/ai-answer.png)
+
+A real question — "What was the highest creatinine value?" — answered from retrieved evidence, citing the source table and timestamp directly in the sentence.
+
+### 6. Graceful Handling of an API Rate Limit
+![Rate limit handled gracefully](docs/images/rate-limit-handling.png)
+
+A rate-limited Groq call returning a clear, contained message rather than a crash — proof the reliability layer works in production, not just in code.
 
 ---
 
-*This project uses the MIMIC-IV Clinical Database Demo v2.2 (https://physionet.org/content/mimic-iv-demo/2.2/, DOI: https://doi.org/10.13026/dp1f-ex47), an openly available, de-identified subset of MIMIC-IV, in accordance with the PhysioNet license and attribution requirements.*
+*Built on the MIMIC-IV Clinical Database Demo v2.2 (https://physionet.org/content/mimic-iv-demo/2.2/, DOI: https://doi.org/10.13026/dp1f-ex47), used under the PhysioNet license.*
