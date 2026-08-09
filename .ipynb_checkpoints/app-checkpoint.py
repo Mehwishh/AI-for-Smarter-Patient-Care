@@ -1,3 +1,27 @@
+"""
+Phase 6: Streamlit app.
+
+Run locally:
+    streamlit run app.py
+
+Needs, in the same folder:
+    - lab_qa_flagged.csv   (from Phase 4's data-quality step)
+    - events_df.csv        (from Phase 2/3's unified timeline)
+    - GROQ_API_KEY set via .env (local) or st.secrets (Streamlit Cloud)
+
+Reliability notes (added during hackathon-finalization pass):
+    - All Groq API calls are wrapped in retry-with-backoff + graceful
+      failure handling so a rate-limit (429) or transient network error
+      shows a clear in-app message instead of an unhandled traceback.
+    - Q&A results are cached in st.session_state keyed by
+      (subject_id, question) so unrelated Streamlit reruns (switching
+      widgets, expanding an expander, etc.) do not silently re-fire the
+      same two LLM calls and burn rate-limit budget.
+    - No change to the underlying retrieval logic, prompts, or product
+      behavior — same architecture, same answers, just fewer redundant
+      calls and no crashes on API failure.
+"""
+
 import os
 import re
 import json
@@ -17,6 +41,7 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+# ---- Light custom styling for a more "product" feel ----
 st.markdown("""
 <style>
     .kpi-card {
@@ -66,7 +91,9 @@ st.error(
 st.title("Patient Timeline & Evidence Retrieval")
 st.caption("MIMIC-IV Clinical Database Demo v2.2 — research/education prototype")
 
+# =========================================================
 # LOAD DATA
+# =========================================================
 @st.cache_data
 def load_data():
     lab_qa = pd.read_csv("lab_qa_flagged.csv", parse_dates=["charttime"])
@@ -80,6 +107,11 @@ lab_qa_flagged, events_df, patient_info, vitals_df = load_data()
 VALID_METRICS = sorted(lab_qa_flagged["label"].dropna().unique().tolist())
 VALID_EVENT_TYPES = sorted(events_df["event_type"].dropna().unique().tolist())
 
+# =========================================================
+# GROQ CLIENT
+# Local dev: reads from .env (via os.environ)
+# Streamlit Cloud: reads from st.secrets
+# =========================================================
 def get_groq_key():
     try:
         if "GROQ_API_KEY" in st.secrets:
@@ -101,10 +133,11 @@ else:
 
 MODEL = "llama-3.3-70b-versatile"
 
+# =========================================================
 # RELIABILITY LAYER — retry with backoff + graceful failure.
 # Wraps every outbound Groq call. Does not change prompts, models,
 # or any retrieval/aggregation logic below.
-
+# =========================================================
 class LLMUnavailable(Exception):
     """Raised when the LLM call fails after retries, with a user-facing reason."""
     pass
@@ -237,7 +270,9 @@ def retrieve_event(subject_id, event_type):
 
     return {"status": "answered", "evidence": _event_evidence(subset)}
 
+# =========================================================
 # PHASE 5: LLM LAYER
+# =========================================================
 QUERY_TOOL = {
     "type": "function",
     "function": {
@@ -359,7 +394,7 @@ st.sidebar.metric("Lab records flagged", f"{flagged_pct:.1%}")
 tab_record, tab_explorer = st.tabs(["Patient Record", "Ask Questions"])
 
 # ---------------------------------------------------------
-# TAB 1  PATIENT RECORD 
+# TAB 1 — PATIENT RECORD (dashboard-style KPI cards + explained tables)
 # ---------------------------------------------------------
 with tab_record:
     admission_rows = timeline_all[timeline_all["event_type"] == "Admission"].sort_values("event_time")
@@ -580,7 +615,7 @@ with tab_record:
         st.write("No ICU vitals recorded for this patient.")
 
 # ---------------------------------------------------------
-# TAB 2 
+# TAB 2 — ASK QUESTIONS (Q&A + full timeline + flagged records)
 # ---------------------------------------------------------
 with tab_explorer:
     st.subheader(f"Patient {subject_id}")
